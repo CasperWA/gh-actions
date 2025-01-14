@@ -30,7 +30,6 @@ from ci_cd.utils import (
     parse_ignore_entries,
     parse_ignore_rules,
     regenerate_requirement,
-    update_file,
     update_specifier_set,
     warning_msg,
 )
@@ -44,7 +43,6 @@ if TYPE_CHECKING:  # pragma: no cover
 # Get logger
 LOGGER = logging.getLogger(__name__)
 
-
 VALID_PACKAGE_NAME_PATTERN = r"^([A-Z0-9]|[A-Z0-9][A-Z0-9._-]*[A-Z0-9])$"
 """
 Pattern to validate package names.
@@ -57,8 +55,44 @@ https://packaging.python.org/en/latest/specifications/name-normalization/
 """
 
 
+def _update_pyproject(
+    original_dependency: str, updated_dependency: str, pyproject: tomlkit.TOMLDocument
+) -> None:
+    """Update dependency in pyproject data structure.
+
+    First, check and update the dependency if it is in the "dependencies" group
+    Then, check and update if it is in any of the "optional-dependencies" groups.
+
+    Essentially, we allow for the original dependency to be in multiple groups.
+    """
+    LOGGER.debug(
+        "Updating pyproject data structure for %r to %r",
+        original_dependency,
+        updated_dependency,
+    )
+
+    if original_dependency in pyproject["project"].get("dependencies", []):
+        index = pyproject["project"]["dependencies"].index(original_dependency)
+        pyproject["project"]["dependencies"][index] = updated_dependency.replace(
+            '"', "'"
+        )
+
+    for extra_name, extra_dependencies in (
+        pyproject["project"].get("optional-dependencies", {}).items()
+    ):
+        if original_dependency in extra_dependencies:
+            index = pyproject["project"]["optional-dependencies"][extra_name].index(
+                original_dependency
+            )
+            pyproject["project"]["optional-dependencies"][extra_name][index] = (
+                updated_dependency.replace('"', "'")
+            )
+
+
 def _format_and_update_dependency(
-    requirement: Requirement, raw_dependency_line: str, pyproject_path: Path
+    requirement: Requirement,
+    raw_dependency_line: str,
+    pyproject: tomlkit.TOMLDocument = None,
 ) -> None:
     """Regenerate dependency without changing anything but the formatting.
 
@@ -72,12 +106,8 @@ def _format_and_update_dependency(
     )
     LOGGER.debug("Regenerated dependency: %r", updated_dependency)
     if updated_dependency != raw_dependency_line:
-        # Update pyproject.toml since the dependency formatting has changed
-        LOGGER.debug("Updating pyproject.toml for %r", requirement.name)
-        update_file(
-            pyproject_path,
-            (re.escape(raw_dependency_line), updated_dependency.replace('"', "'")),
-        )
+        # Update pyproject data structure since the dependency formatting has changed
+        _update_pyproject(raw_dependency_line, updated_dependency, pyproject)
 
 
 @task(
@@ -192,7 +222,8 @@ def update_deps(
         )
 
     # Build the list of dependencies listed in pyproject.toml
-    dependencies: list[str] = pyproject.get("project", {}).get("dependencies", [])
+    dependencies: list[str] = []
+    dependencies.extend(pyproject.get("project", {}).get("dependencies", []))
     for optional_deps in (
         pyproject.get("project", {}).get("optional-dependencies", {}).values()
     ):
@@ -259,9 +290,7 @@ def update_deps(
             LOGGER.info(msg)
             print(info_msg(msg), flush=True)
 
-            _format_and_update_dependency(
-                parsed_requirement, dependency, pyproject_path
-            )
+            _format_and_update_dependency(parsed_requirement, dependency, pyproject)
             already_handled_packages.add(parsed_requirement)
             continue
 
@@ -278,9 +307,7 @@ def update_deps(
                 LOGGER.warning(msg)
                 print(warning_msg(msg), flush=True)
 
-            _format_and_update_dependency(
-                parsed_requirement, dependency, pyproject_path
-            )
+            _format_and_update_dependency(parsed_requirement, dependency, pyproject)
             already_handled_packages.add(parsed_requirement)
             continue
 
@@ -469,14 +496,8 @@ def update_deps(
             )
             LOGGER.debug("Updated dependency: %r", updated_dependency)
 
-            pattern_sub_line = re.escape(dependency)
-            replacement_sub_line = updated_dependency.replace('"', "'")
+            _update_pyproject(dependency, updated_dependency, pyproject)
 
-            LOGGER.debug("pattern_sub_line: %s", pattern_sub_line)
-            LOGGER.debug("replacement_sub_line: %s", replacement_sub_line)
-
-            # Update pyproject.toml
-            update_file(pyproject_path, (pattern_sub_line, replacement_sub_line))
             already_handled_packages.add(parsed_requirement)
             updated_packages[parsed_requirement.name] = ",".join(
                 str(_)
@@ -491,6 +512,9 @@ def update_deps(
         sys.exit(
             f"{Emoji.CROSS_MARK.value} Errors occurred! See printed statements above."
         )
+
+    # Update pyproject.toml
+    pyproject_path.write_text(tomlkit.dumps(pyproject), encoding="utf-8")
 
     if updated_packages:
         print(

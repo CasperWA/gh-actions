@@ -1116,7 +1116,22 @@ all = ["{{ cookiecutter.project_slug }}[dev]"]
             r"statements above\.$"
         )
 
+    # Due to an atomistic approach, if an error occurs, the pyproject.toml file will
+    # not be updated.
+    successful_expected_pyproject_file_data = """[project]
+name = "{{ cookiecutter.project_slug }}"
+requires-python = ">=3.8"
+
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest~=7.4"]
+all = ["{{ cookiecutter.project_slug }}[dev]"]
+"""
+    erroneous_expected_pyproject_file_data = pyproject_file_data
+
     if skip_unnormalized_python_package_names:
+        # This should end in success
         update_deps(
             context,
             root_repo_path=str(tmp_path),
@@ -1140,7 +1155,13 @@ all = ["{{ cookiecutter.project_slug }}[dev]"]
             terminal_error_msg.search(stdouterr.err) is None
         ), f"{terminal_error_msg!r} unexpectedly found in {stdouterr.err}"
 
+        assert (
+            pyproject_file.read_text(encoding="utf8")
+            == successful_expected_pyproject_file_data
+        )
+
     else:
+        # This should end in failure
         with pytest.raises(SystemExit, match=raise_msg):
             update_deps(
                 context,
@@ -1173,18 +1194,7 @@ all = ["{{ cookiecutter.project_slug }}[dev]"]
                 terminal_error_msg.search(stdouterr.err) is not None
             ), f"{terminal_error_msg!r} not found in {stdouterr.err}"
 
-    # In both cases, the pyproject.toml file should be updated for pytest.
-    # When/if a more atomistic approach is taken, then this should *NOT* be the case
-    # for runs where an error occurs.
-    expected_pyproject_file_data = """[project]
-name = "{{ cookiecutter.project_slug }}"
-requires-python = ">=3.8"
-
-dependencies = []
-
-[project.optional-dependencies]
-dev = ["pytest~=7.4"]
-all = ["{{ cookiecutter.project_slug }}[dev]"]
-"""
-
-    assert pyproject_file.read_text(encoding="utf8") == expected_pyproject_file_data
+        assert (
+            pyproject_file.read_text(encoding="utf8")
+            == erroneous_expected_pyproject_file_data
+        )
